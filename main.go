@@ -87,13 +87,41 @@ func main() {
 
 	if cfg.TopoFile != "" {
 		// ===== 动态拓扑路径 =====
-		opts := topology.DynamicOptions{
-			Scheduler: scheduler,
-			// BaseSat:    &protocol.PushAllBaseSat{},           // 默认，可替换为自定义注入策略
-			// NewChannel: func(id int, bw float64) protocol.ChannelStrategy {
-			//     return protocol.NewFIFOChannel()              // 默认，可替换为 TDMAChannel 等
-			// },
+		var opts topology.DynamicOptions
+
+		if cfg.SchedulerType == "satdissem" {
+			// ---------- SATDISSEM 完整算法 ----------
+			const planeSize = 32
+			stats := protocol.NewSimpleInjectionStats(cfg.NumFragments)
+			// groupMap 在 LoadDynamic 后填充，仿真事件在 sim.Run() 后才触发，时序上没问题
+			groupMap := make(map[int][]protocol.NodeInfo)
+			opts = topology.DynamicOptions{
+				Scheduler: protocol.NewScarcityGossip(cfg.NumFragments, cfg.FragmentSize, 64),
+				BaseSat: protocol.NewSmartInjection(
+					stats,
+					// 卫星ID从1开始，(nodeID-1)/planeSize 保证32颗卫星完整归入同一平面
+					func(sat protocol.NodeInfo) int { return (sat.NodeID() - 1) / planeSize },
+					func(g int) []protocol.NodeInfo { return groupMap[g] },
+					0.6,
+				),
+				LinkKindFn: func(idA, idB, baseID int) protocol.LinkKind {
+					if idA == baseID || idB == baseID {
+						return protocol.LinkBaseSat
+					}
+					if (idA-1)/planeSize == (idB-1)/planeSize {
+						return protocol.LinkIntraPlane
+					}
+					return protocol.LinkInterPlane
+				},
+			}
+			_ = groupMap // 下方 LoadDynamic 后填充
+			// 保存引用供后续填充
+			defer func() {}() // placeholder
+			_ = stats
+		} else {
+			opts = topology.DynamicOptions{Scheduler: scheduler}
 		}
+
 		res, err := topology.LoadDynamic(sim, cfg, cfg.TopoFile, opts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error loading topo file: %v\n", err)
@@ -101,6 +129,22 @@ func main() {
 		}
 		topology.PrintDynamicSummary(res)
 		satellites = res.Satellites
+
+		// SATDISSEM：用真实卫星列表填充分组映射（在 sim.Run() 前完成即可）
+		if cfg.SchedulerType == "satdissem" {
+			const planeSize = 32
+			groupMap := make(map[int][]protocol.NodeInfo)
+			for _, sat := range res.Satellites {
+				g := (sat.NodeID() - 1) / planeSize
+				groupMap[g] = append(groupMap[g], sat)
+			}
+			if si, ok := opts.BaseSat.(*protocol.SmartInjection); ok {
+				si.GroupPeers = func(g int) []protocol.NodeInfo { return groupMap[g] }
+			}
+			fmt.Printf("=== SATDISSEM: %d orbital groups (planeSize=%d) ===\n",
+				len(groupMap), planeSize)
+		}
+
 		// 动态拓扑：注入由 link-up 事件触发，不需要静态注入
 		fmt.Printf("=== Dynamic injection: fragments will be pushed on link-up events ===\n\n")
 	} else {
@@ -218,6 +262,9 @@ func buildScheduler(cfg config.Config) protocol.SchedulingStrategy {
 		return protocol.NewGossipPushScheduler(cfg.NumFragments, cfg.FragmentSize, cfg.GossipFanout, cfg.RandomSeed)
 	case "push_pull":
 		return protocol.NewPushPullScheduler(cfg.NumFragments, cfg.FragmentSize, cfg.GossipFanout, cfg.RandomSeed)
+	case "satdissem":
+		// 动态拓扑路径下由上层直接构建（含 groupMap），这里是静态拓扑的回退
+		return protocol.NewScarcityGossip(cfg.NumFragments, cfg.FragmentSize, 64)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown scheduler: %s\n", cfg.SchedulerType)
 		os.Exit(1)

@@ -24,6 +24,27 @@ func pushAllToLink(node NodeInfo, link LinkInfo, fragmentSize int) {
 	}
 }
 
+// pushMissingToLink 只推送对方缺少的分片（anti-entropy 去重）
+func pushMissingToLink(node NodeInfo, link LinkInfo, fragmentSize int) {
+	storage := node.GetStorage()
+	if storage == nil {
+		return
+	}
+	dst := link.Destination()
+	dstSto := dst.GetStorage()
+	for _, fragID := range storage.OwnedFragments() {
+		if dstSto != nil && dstSto.Has(fragID) {
+			continue
+		}
+		link.TransmitPacket(Packet{
+			FragmentID: fragID,
+			Size:       fragmentSize,
+			SrcID:      node.NodeID(),
+			DstID:      dst.NodeID(),
+		})
+	}
+}
+
 // -------------------------------------------------------------------
 // EpidemicScheduler �?流行病传播（Epidemic/Gossip Push）调度策�?
 //
@@ -46,20 +67,19 @@ func (e *EpidemicScheduler) OnReceive(node NodeInfo, pkt Packet) {
 		if dst.NodeID() == pkt.SrcID {
 			continue
 		}
-		fwd := Packet{
+		link.TransmitPacket(Packet{
 			FragmentID: pkt.FragmentID,
 			Size:       pkt.Size,
 			SrcID:      node.NodeID(),
 			DstID:      dst.NodeID(),
 			HopCount:   pkt.HopCount + 1,
-		}
-		link.TransmitPacket(fwd)
+		})
 	}
 }
 
 func (e *EpidemicScheduler) OnTick(node NodeInfo) {}
 
-// OnLinkUp 链路开启时，向新邻居推送全部已有分�?
+// OnLinkUp 链路开启时，向新邻居推送全部已有分片（真实 Epidemic 行为：无法知道对方状态）
 func (e *EpidemicScheduler) OnLinkUp(node NodeInfo, link LinkInfo) {
 	pushAllToLink(node, link, e.FragmentSize)
 }

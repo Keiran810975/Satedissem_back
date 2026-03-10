@@ -96,7 +96,10 @@ func main() {
 			// groupMap 在 LoadDynamic 后填充，仿真事件在 sim.Run() 后才触发，时序上没问题
 			groupMap := make(map[int][]protocol.NodeInfo)
 			opts = topology.DynamicOptions{
-				Scheduler: protocol.NewScarcityGossip(cfg.NumFragments, cfg.FragmentSize, 64),
+				// 每个卫星节点独立创建 ScarcityGossip 实例（独立 scarcityCount）
+				NewScheduler: func() protocol.SchedulingStrategy {
+					return protocol.NewScarcityGossip(cfg.NumFragments, cfg.FragmentSize, 64)
+				},
 				BaseSat: protocol.NewSmartInjection(
 					stats,
 					// 卫星ID从1开始，(nodeID-1)/planeSize 保证32颗卫星完整归入同一平面

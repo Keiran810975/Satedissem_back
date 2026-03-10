@@ -95,7 +95,14 @@ type contactPair struct {
 type DynamicOptions struct {
 	// Scheduler 卡星节点的转发策略（epidemic / gossip / push_pull / 自定义）。
 	// nil = 卡星不主动转发（只依赖基站直接注入）。
+	// 注意：所有节点共享同一实例。若策略含有节点级私有状态（如 scarcityCount），
+	// 应改用 NewScheduler 工厂，使每个节点获得独立实例。
 	Scheduler protocol.SchedulingStrategy
+
+	// NewScheduler 为每个卫星节点独立创建调度策略实例的工厂函数。
+	// 设置此字段时优先于 Scheduler 字段。
+	// 适用于策略含有节点级私有状态的场景（如 ScarcityGossip 的 scarcityCount）。
+	NewScheduler func() protocol.SchedulingStrategy
 
 	// BaseSat 基站在联系窗口开启时向卡星注入分片的策略。
 	// nil = 默认：推送卡星缺少的所有分片（即原 injectBase 逻辑）。
@@ -180,7 +187,11 @@ func LoadDynamic(
 				n.Storage.Store(j)
 			}
 		} else {
-			n.Scheduler = opts.Scheduler
+			if opts.NewScheduler != nil {
+				n.Scheduler = opts.NewScheduler() // 每节点独立实例
+			} else {
+				n.Scheduler = opts.Scheduler
+			}
 		}
 		nodes[i] = n
 		res.AllNodes = append(res.AllNodes, n)

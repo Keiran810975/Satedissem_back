@@ -175,40 +175,41 @@ func NewScarcityGossip(totalFragments, fragmentSize, metaSize int) *ScarcityGoss
 }
 
 // OnLinkUp 链路开启时：
-//   - 稳定链路（intra-plane）：直接全量 push（快速本地饱和）
-//   - 机会链路（inter-plane）：发送 MetaReq（缺失列表），触发 pull 流程
+//   - 稳定链路（intra-plane）：推送对方缺少的所有分片（快速本地饱和）
+//   - 机会链路（inter-plane）：按稀缺度排序推送对方缺少的分片
 func (sg *ScarcityGossip) OnLinkUp(node NodeInfo, link LinkInfo) {
 	switch link.Kind() {
 	case LinkIntraPlane:
-		// 稳定链路：快速饱和，全量推送
-		pushAllToLink(node, link, sg.FragmentSize)
+		// 稳定链路：快速饱和，推送对方缺少的（同 epidemic 去重逻辑）
+		pushMissingToLink(node, link, sg.FragmentSize)
 
 	default:
-		// 机会链路 / 未知类型：发送 MetaReq 触发 pull
-		sg.sendMetaReq(node, link)
+		// 机会链路：按稀缺度排序推送对方缺少的分片
+		sg.pushByScarcity(node, link)
 	}
 }
 
-// OnReceive 收到新数据分片时：向所有邻居 push（epidemic 模式作为基底）。
-// 注：pull 流程中真正的精细发送在 OnMetadata 完成；OnReceive 负责快速扩散。
+// OnReceive 收到新数据分片时：
+//   - IntraPlane：直接 push 给对方（如果对方缺）（快速本地饱和）
+//   - InterPlane：直接 push 给对方（如果对方缺），优先推送稀缺片不走 MetaReq 往返
 func (sg *ScarcityGossip) OnReceive(node NodeInfo, pkt Packet) {
-	// 向稳定链路邻居直接 push（intra-plane 饱和优先）
 	for _, link := range node.GetLinks() {
-		if link.Destination().NodeID() == pkt.SrcID {
+		dst := link.Destination()
+		if dst.NodeID() == pkt.SrcID {
 			continue
 		}
-		if link.Kind() == LinkIntraPlane {
-			link.TransmitPacket(Packet{
-				Type:       PacketData,
-				FragmentID: pkt.FragmentID,
-				Size:       pkt.Size,
-				SrcID:      node.NodeID(),
-				DstID:      link.Destination().NodeID(),
-				HopCount:   pkt.HopCount + 1,
-			})
+		// 只在对方缺少此分片时才发送（去重）
+		if dstSto := dst.GetStorage(); dstSto != nil && dstSto.Has(pkt.FragmentID) {
+			continue
 		}
-		// 机会链路不在 OnReceive 中 push，
-		// 等下次 OnLinkUp 时通过 pull 流程传输稀缺块
+		link.TransmitPacket(Packet{
+			Type:       PacketData,
+			FragmentID: pkt.FragmentID,
+			Size:       pkt.Size,
+			SrcID:      node.NodeID(),
+			DstID:      dst.NodeID(),
+			HopCount:   pkt.HopCount + 1,
+		})
 	}
 }
 
@@ -300,6 +301,53 @@ func (sg *ScarcityGossip) handleMetaReq(node NodeInfo, pkt Packet, replyLink Lin
 			Size:       sg.FragmentSize,
 			SrcID:      node.NodeID(),
 			DstID:      replyLink.Destination().NodeID(),
+		})
+	}
+}
+
+// pushByScarcity 对 InterPlane 链路：检查对方缺少的分片，按稀缺度从高到低排序后发送。
+// 与 Epidemic 的 pushMissingToLink 传输量相同（都是对方缺少的全部分片），
+// 但发送顺序不同——稀缺片优先占用早期带宽时隙，加速全网收敛。
+func (sg *ScarcityGossip) pushByScarcity(node NodeInfo, link LinkInfo) {
+	sto := node.GetStorage()
+	if sto == nil {
+		return
+	}
+	dst := link.Destination()
+	dstSto := dst.GetStorage()
+	if dstSto == nil {
+		return
+	}
+
+	type scored struct {
+		fragID   int
+		scarcity int
+	}
+	var candidates []scored
+	for _, fragID := range sto.OwnedFragments() {
+		if dstSto.Has(fragID) {
+			continue
+		}
+		candidates = append(candidates, scored{fragID, sg.scarcityCount[fragID]})
+	}
+	if len(candidates) == 0 {
+		return
+	}
+
+	// 按稀缺度降序排列
+	for i := 1; i < len(candidates); i++ {
+		for j := i; j > 0 && candidates[j].scarcity > candidates[j-1].scarcity; j-- {
+			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
+		}
+	}
+
+	for _, c := range candidates {
+		link.TransmitPacket(Packet{
+			Type:       PacketData,
+			FragmentID: c.fragID,
+			Size:       sg.FragmentSize,
+			SrcID:      node.NodeID(),
+			DstID:      dst.NodeID(),
 		})
 	}
 }

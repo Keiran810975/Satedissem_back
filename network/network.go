@@ -54,6 +54,18 @@ func (l *Link) ResetWindow(start simulator.Time) {
 	l.channel.ResetWindow(start)
 }
 
+// BusyUntil 返回该链路信道层预计忙碌截止时刻。
+// 若信道策略未提供忙碌信息，则返回 now。
+func (l *Link) BusyUntil(now simulator.Time) simulator.Time {
+	if ch, ok := l.channel.(interface{ BusyUntil() simulator.Time }); ok {
+		busy := ch.BusyUntil()
+		if busy > now {
+			return busy
+		}
+	}
+	return now
+}
+
 // TransmitPacket 将数据包放入链路传输。
 // 发送时机由信道策略（ChannelStrategy）决定，支持 FIFO 排队、TDMA 时隙等。
 func (l *Link) TransmitPacket(pkt protocol.Packet) {

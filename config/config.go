@@ -41,6 +41,9 @@ type Config struct {
 	// --- 动态拓扑 ---
 	// 如果设置了 TopoFile，则导入动态拓扑，忽畑6静态 Topology/NumSatellites 设置
 	TopoFile string `json:"topo_file"` // 拓扑文件路径（空 = 使用静态拓扑）
+	// 每颗卫星同时允许建立的链路上限（仅动态拓扑生效）
+	// <=0 表示不限制
+	MaxConcurrentLinksPerSat int `json:"max_concurrent_links_per_sat"`
 
 	// --- 其他 ---
 	RandomSeed int64 `json:"random_seed"`
@@ -49,18 +52,19 @@ type Config struct {
 // DefaultConfig 返回合理的默认配置
 func DefaultConfig() Config {
 	return Config{
-		NumSatellites:    5,
-		NumFragments:     20,
-		FragmentSize:     1024 * 1024,                        // 1 MB
-		BaseSatBandwidth: 100e6,                              // 100 Mbps
-		SatSatBandwidth:  50e6,                               // 50 Mbps
-		BaseSatDelay:     uint64(10 * simulator.Millisecond), // 10 ms
-		SatSatDelay:      uint64(5 * simulator.Millisecond),  // 5 ms
-		Topology:         "full_mesh",
-		SchedulerType:    "epidemic",
-		GossipFanout:     2,
-		InjectionType:    "round_robin",
-		RandomSeed:       42,
+		NumSatellites:            5,
+		NumFragments:             20,
+		FragmentSize:             1024 * 1024,                        // 1 MB
+		BaseSatBandwidth:         100e6,                              // 100 Mbps
+		SatSatBandwidth:          50e6,                               // 50 Mbps
+		BaseSatDelay:             uint64(10 * simulator.Millisecond), // 10 ms
+		SatSatDelay:              uint64(5 * simulator.Millisecond),  // 5 ms
+		Topology:                 "full_mesh",
+		SchedulerType:            "epidemic",
+		GossipFanout:             2,
+		InjectionType:            "round_robin",
+		MaxConcurrentLinksPerSat: 6,
+		RandomSeed:               42,
 	}
 }
 
@@ -95,11 +99,11 @@ func (c Config) String() string {
 		"Config{satellites=%d, fragments=%d, fragSize=%d B, "+
 			"baseBW=%.0f bps, satBW=%.0f bps, "+
 			"baseDelay=%s, satDelay=%s, "+
-			"topology=%s, scheduler=%s, injection=%s}",
+			"topology=%s, scheduler=%s, injection=%s, maxSatLinks=%d}",
 		c.NumSatellites, c.NumFragments, c.FragmentSize,
 		c.BaseSatBandwidth, c.SatSatBandwidth,
 		simulator.FormatTime(simulator.Time(c.BaseSatDelay)),
 		simulator.FormatTime(simulator.Time(c.SatSatDelay)),
-		c.Topology, c.SchedulerType, c.InjectionType,
+		c.Topology, c.SchedulerType, c.InjectionType, c.MaxConcurrentLinksPerSat,
 	)
 }

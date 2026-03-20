@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 import (
 	"flag"
@@ -15,9 +15,13 @@ import (
 
 func main() {
 	// --- 命令行参数 ---
+	serveMode := flag.Bool("serve", false, "启动 HTTP API 服务")
+	listenAddr := flag.String("addr", ":8080", "HTTP API 监听地址")
+	topoDir := flag.String("topo-dir", "topofile", "拓扑文件目录（API 模式使用）")
 	configFile := flag.String("config", "", "JSON 配置文件路径（可选）")
 	genConfig := flag.Bool("gen-config", false, "生成默认配置文件 config.json 并退出")
 	topoFile := flag.String("topo-file", "", "动态拓扑文件路径（JSON）；设置后忽略 -topology/-satellites")
+	maxSatLinks := flag.Int("max-sat-links", -1, "每颗卫星最大同时建立链路数（动态拓扑，-1 使用配置值，0 表示不限制）")
 
 	// 静态拓扑参数（可覆盖配置文件）
 	numSat := flag.Int("satellites", 0, "卫星数量（静态拓扑）")
@@ -70,6 +74,17 @@ func main() {
 	}
 	if *topoFile != "" {
 		cfg.TopoFile = *topoFile
+	}
+	if *maxSatLinks >= 0 {
+		cfg.MaxConcurrentLinksPerSat = *maxSatLinks
+	}
+
+	if *serveMode {
+		if err := runAPIServer(*listenAddr, *topoDir, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	fmt.Println("=== Satellite Fragment Distribution Simulator ===")

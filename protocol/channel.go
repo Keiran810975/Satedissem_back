@@ -35,6 +35,11 @@ func (f *FIFOChannel) ResetWindow(windowStart simulator.Time) {
 	f.nextAvailable = windowStart
 }
 
+// BusyUntil 返回当前信道已排队发送的忙碌截止时刻。
+func (f *FIFOChannel) BusyUntil() simulator.Time {
+	return f.nextAvailable
+}
+
 // =============================================================================
 // TDMAChannel — 时分多址信道（TDMA）
 //
@@ -59,9 +64,10 @@ type TDMAChannel struct {
 }
 
 // NewTDMAChannel 创建一个 TDMA 信道。
-//   frameLen   — 帧长（例如 10ms）
-//   slotOffset — 本链路在帧内的偏移（例如 0ms, 2ms, 4ms…分别对应不同链路）
-//   slotWidth  — 每帧内可发时长（例如 2ms）
+//
+//	frameLen   — 帧长（例如 10ms）
+//	slotOffset — 本链路在帧内的偏移（例如 0ms, 2ms, 4ms…分别对应不同链路）
+//	slotWidth  — 每帧内可发时长（例如 2ms）
 func NewTDMAChannel(frameLen, slotOffset, slotWidth simulator.Time) *TDMAChannel {
 	return &TDMAChannel{
 		frameLen:   frameLen,
@@ -89,6 +95,11 @@ func (t *TDMAChannel) CommitTransmit(_, _ simulator.Time) {
 
 func (t *TDMAChannel) ResetWindow(windowStart simulator.Time) {
 	t.windowStart = windowStart
+}
+
+// BusyUntil 对固定时隙 TDMA 返回窗口起点，表示不维护 FIFO 队列式忙碌时刻。
+func (t *TDMAChannel) BusyUntil() simulator.Time {
+	return t.windowStart
 }
 
 // =============================================================================

@@ -18,6 +18,7 @@ type NodeInfo interface {
 	GetLinks() []LinkInfo
 	GetSim() *simulator.Simulator
 	GetStorage() StorageStrategy // 获取节点的存储（用于 OnLinkUp 中主动同步）
+	InjectDecodedFragment(fragmentID int, srcID int)
 }
 
 // LinkKind 描述链路的物理/逻辑类型，供策略层区分处理。
@@ -47,9 +48,10 @@ type LinkInfo interface {
 type PacketType int
 
 const (
-	PacketData     PacketType = iota // 普通数据分片（默认）
-	PacketMetaReq                    // 元数据请求：我缺哪些分片（pull 触发）
-	PacketMetaResp                   // 元数据响应：我有哪些分片（bitmap 交换）
+	PacketData      PacketType = iota // 普通数据分片（默认）
+	PacketMetaReq                     // 元数据请求：我缺哪些分片（pull 触发）
+	PacketMetaResp                    // 元数据响应：我有哪些分片（bitmap 交换）
+	PacketRLNCCoded                   // RLNC 编码包（非原始分片）
 )
 
 // Packet 表示网络中传输的一个包（数据或元数据）。

@@ -28,7 +28,7 @@ func main() {
 	numFrag := flag.Int("fragments", 0, "分片数量")
 	fragSize := flag.Int("frag-size", 0, "分片大小/字节")
 	topoType := flag.String("topology", "", "静态拓扑: full_mesh, ring, star")
-	schedType := flag.String("scheduler", "", "调度策略: epidemic, gossip, push_pull")
+	schedType := flag.String("scheduler", "", "调度策略: epidemic, gossip, push_pull, satdissem, rlnc, fl_gossip")
 
 	flag.Parse()
 
@@ -136,6 +136,25 @@ func main() {
 			// 保存引用供后续填充
 			defer func() {}() // placeholder
 			_ = stats
+		} else if cfg.SchedulerType == "rlnc" {
+			rlncScheduler, rlncBase := buildRLNCStrategies(cfg)
+			opts = topology.DynamicOptions{
+				Scheduler: rlncScheduler,
+				BaseSat:   rlncBase,
+			}
+		} else if cfg.SchedulerType == "fl_gossip" {
+			opts = topology.DynamicOptions{
+				Scheduler: buildFLGossipScheduler(cfg),
+				LinkKindFn: func(idA, idB, baseID int) protocol.LinkKind {
+					if idA == baseID || idB == baseID {
+						return protocol.LinkBaseSat
+					}
+					if (idA-1)/cfg.FLGossipPlaneSize == (idB-1)/cfg.FLGossipPlaneSize {
+						return protocol.LinkIntraPlane
+					}
+					return protocol.LinkInterPlane
+				},
+			}
 		} else {
 			opts = topology.DynamicOptions{Scheduler: scheduler}
 		}
@@ -172,19 +191,28 @@ func main() {
 		topology.SetSchedulers(net.Satellites, scheduler)
 		satellites = net.Satellites
 
-		// 静态注入
-		injector := buildInjector(cfg)
-		fragments := make([]int, cfg.NumFragments)
-		for i := range fragments {
-			fragments[i] = i
+		if cfg.SchedulerType == "rlnc" {
+			_, rlncBase := buildRLNCStrategies(cfg)
+			fmt.Println("=== RLNC coded injection from base station ===")
+			for _, link := range net.Base.GetLinks() {
+				rlncBase.OnBaseLinkUp(net.Base, link.Destination(), link, cfg.FragmentSize)
+			}
+			fmt.Printf("  Sent RLNC coded symbols via %d base links\n\n", len(net.Base.GetLinks()))
+		} else {
+			// 静态注入
+			injector := buildInjector(cfg)
+			fragments := make([]int, cfg.NumFragments)
+			for i := range fragments {
+				fragments[i] = i
+			}
+			satNodes := make([]protocol.NodeInfo, len(satellites))
+			for i, s := range satellites {
+				satNodes[i] = s
+			}
+			fmt.Println("=== Injecting fragments from base station ===")
+			injector.Inject(net.Base, satNodes, fragments, cfg.FragmentSize)
+			fmt.Printf("  Injected %d fragments into %d satellites\n\n", cfg.NumFragments, cfg.NumSatellites)
 		}
-		satNodes := make([]protocol.NodeInfo, len(satellites))
-		for i, s := range satellites {
-			satNodes[i] = s
-		}
-		fmt.Println("=== Injecting fragments from base station ===")
-		injector.Inject(net.Base, satNodes, fragments, cfg.FragmentSize)
-		fmt.Printf("  Injected %d fragments into %d satellites\n\n", cfg.NumFragments, cfg.NumSatellites)
 	}
 
 	var completionTime simulator.Time
@@ -283,11 +311,44 @@ func buildScheduler(cfg config.Config) protocol.SchedulingStrategy {
 	case "satdissem":
 		// 动态拓扑路径下由上层直接构建（含 groupMap），这里是静态拓扑的回退
 		return protocol.NewScarcityGossip(cfg.NumFragments, cfg.FragmentSize, 64)
+	case "rlnc":
+		rlncScheduler, _ := buildRLNCStrategies(cfg)
+		return rlncScheduler
+	case "fl_gossip":
+		return buildFLGossipScheduler(cfg)
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown scheduler: %s\n", cfg.SchedulerType)
 		os.Exit(1)
 		return nil
 	}
+}
+
+func buildFLGossipScheduler(cfg config.Config) protocol.SchedulingStrategy {
+	return protocol.NewFLGossipScheduler(
+		cfg.NumFragments,
+		cfg.FragmentSize,
+		cfg.FLGossipPlaneSize,
+		cfg.FLGossipIntraRounds,
+		cfg.FLGossipRounds,
+		cfg.FLGossipFanout,
+		cfg.FLGossipLossProb,
+		cfg.FLGossipLocalSteps,
+		cfg.FLGossipLocalStepCostUs,
+		cfg.FLGossipLocalComputeOps,
+		cfg.RandomSeed,
+	)
+}
+
+func buildRLNCStrategies(cfg config.Config) (protocol.SchedulingStrategy, protocol.BaseSatStrategy) {
+	scheduler := protocol.NewRLNCScheduler(
+		cfg.NumFragments,
+		cfg.FragmentSize,
+		cfg.RandomSeed,
+		cfg.RLNCDecodeUnitUs,
+		cfg.RLNCSymbolBurst,
+	)
+	baseSat := protocol.NewRLNCBaseSatWithBurst(cfg.NumFragments, cfg.FragmentSize, cfg.RLNCSymbolBurst)
+	return scheduler, baseSat
 }
 
 // buildInjector 根据配置构建注入策略（仅静态拓扑使用）

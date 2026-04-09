@@ -34,6 +34,26 @@ type Config struct {
 	// "push_pull"  — gossip push + 周期 pull
 	SchedulerType string `json:"scheduler_type"`
 	GossipFanout  int    `json:"gossip_fanout"` // gossip/push_pull 的扇出度
+	// FL-gossip：轨道平面大小（用于区分同轨/异轨链路）
+	FLGossipPlaneSize int `json:"fl_gossip_plane_size"`
+	// FL-gossip：同轨归约轮数（<=0 自动使用 2*(planeSize-1)）
+	FLGossipIntraRounds int `json:"fl_gossip_intra_rounds"`
+	// FL-gossip：异轨 gossip 轮数 C
+	FLGossipRounds int `json:"fl_gossip_rounds"`
+	// FL-gossip：每轮异轨 fanout
+	FLGossipFanout int `json:"fl_gossip_fanout"`
+	// FL-gossip：跨轨链路丢包概率（自补偿模型参数）
+	FLGossipLossProb float64 `json:"fl_gossip_loss_prob"`
+	// FL-gossip：本地训练迭代步数
+	FLGossipLocalSteps int `json:"fl_gossip_local_steps"`
+	// FL-gossip：每步本地训练代价（微秒）
+	FLGossipLocalStepCostUs float64 `json:"fl_gossip_local_step_cost_us"`
+	// FL-gossip：每步本地训练额外计算操作数（用于墙钟开销建模）
+	FLGossipLocalComputeOps int `json:"fl_gossip_local_compute_ops"`
+	// RLNC 解码复杂度单位耗时（微秒），总解码时延约为 (K^3 + K^2L) * RLNCDecodeUnitUs
+	RLNCDecodeUnitUs float64 `json:"rlnc_decode_unit_us"`
+	// RLNC 每次 base-sat 窗口开启时发送的编码包数量；<=0 表示自动（max(K,8)）
+	RLNCSymbolBurst int `json:"rlnc_symbol_burst"`
 
 	// "round_robin" — 轮询注入
 	InjectionType string `json:"injection_type"`
@@ -62,6 +82,16 @@ func DefaultConfig() Config {
 		Topology:                 "full_mesh",
 		SchedulerType:            "epidemic",
 		GossipFanout:             2,
+		FLGossipPlaneSize:        32,
+		FLGossipIntraRounds:      0,
+		FLGossipRounds:           3,
+		FLGossipFanout:           2,
+		FLGossipLossProb:         0.15,
+		FLGossipLocalSteps:       20,
+		FLGossipLocalStepCostUs:  500,
+		FLGossipLocalComputeOps:  2000,
+		RLNCDecodeUnitUs:         4.0,
+		RLNCSymbolBurst:          0,
 		InjectionType:            "round_robin",
 		MaxConcurrentLinksPerSat: 6,
 		RandomSeed:               42,
@@ -99,11 +129,15 @@ func (c Config) String() string {
 		"Config{satellites=%d, fragments=%d, fragSize=%d B, "+
 			"baseBW=%.0f bps, satBW=%.0f bps, "+
 			"baseDelay=%s, satDelay=%s, "+
-			"topology=%s, scheduler=%s, injection=%s, maxSatLinks=%d}",
+			"topology=%s, scheduler=%s, flPlane=%d, flIntra=%d, flRounds=%d, flFanout=%d, flLoss=%.2f, flLocalSteps=%d, flStepUs=%.1f, flOps=%d, rlncDecodeUs=%.2f, rlncBurst=%d, injection=%s, maxSatLinks=%d}",
 		c.NumSatellites, c.NumFragments, c.FragmentSize,
 		c.BaseSatBandwidth, c.SatSatBandwidth,
 		simulator.FormatTime(simulator.Time(c.BaseSatDelay)),
 		simulator.FormatTime(simulator.Time(c.SatSatDelay)),
-		c.Topology, c.SchedulerType, c.InjectionType, c.MaxConcurrentLinksPerSat,
+		c.Topology, c.SchedulerType,
+		c.FLGossipPlaneSize, c.FLGossipIntraRounds, c.FLGossipRounds, c.FLGossipFanout, c.FLGossipLossProb,
+		c.FLGossipLocalSteps, c.FLGossipLocalStepCostUs, c.FLGossipLocalComputeOps,
+		c.RLNCDecodeUnitUs, c.RLNCSymbolBurst,
+		c.InjectionType, c.MaxConcurrentLinksPerSat,
 	)
 }

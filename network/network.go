@@ -191,6 +191,31 @@ func (n *Node) IsBaseStation() bool                  { return n.isBase }
 func (n *Node) GetSim() *simulator.Simulator         { return n.sim }
 func (n *Node) GetStorage() protocol.StorageStrategy { return n.Storage }
 
+func (n *Node) InjectDecodedFragment(fragmentID int, srcID int) {
+	if n.Storage == nil || n.Storage.Has(fragmentID) {
+		return
+	}
+
+	n.Storage.Store(fragmentID)
+	n.NewRecvCount++
+
+	pkt := protocol.Packet{
+		Type:       protocol.PacketData,
+		FragmentID: fragmentID,
+		Size:       0,
+		SrcID:      srcID,
+		DstID:      n.id,
+	}
+
+	if n.OnNewFragment != nil {
+		n.OnNewFragment(n, pkt)
+	}
+
+	if n.Scheduler != nil {
+		n.Scheduler.OnReceive(n, pkt)
+	}
+}
+
 func (n *Node) GetLinks() []protocol.LinkInfo {
 	result := make([]protocol.LinkInfo, len(n.links))
 	for i, l := range n.links {

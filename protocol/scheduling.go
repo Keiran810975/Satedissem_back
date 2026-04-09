@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"math"
 	"math/rand"
 	"sat-sim/simulator"
 )
@@ -55,6 +56,7 @@ func pushMissingToLink(node NodeInfo, link LinkInfo, fragmentSize int) {
 type EpidemicScheduler struct {
 	TotalFragments int
 	FragmentSize   int
+	maxNodeID      int
 }
 
 func NewEpidemicScheduler(totalFragments, fragmentSize int) *EpidemicScheduler {
@@ -62,12 +64,14 @@ func NewEpidemicScheduler(totalFragments, fragmentSize int) *EpidemicScheduler {
 }
 
 func (e *EpidemicScheduler) OnReceive(node NodeInfo, pkt Packet) {
+	e.observeNode(node)
 	for _, link := range node.GetLinks() {
 		dst := link.Destination()
+		e.observeNode(dst)
 		if dst.NodeID() == pkt.SrcID {
 			continue
 		}
-		link.TransmitPacket(Packet{
+		e.transmitWithOverhead(node, link, Packet{
 			FragmentID: pkt.FragmentID,
 			Size:       pkt.Size,
 			SrcID:      node.NodeID(),
@@ -81,11 +85,98 @@ func (e *EpidemicScheduler) OnTick(node NodeInfo) {}
 
 // OnLinkUp 链路开启时，向新邻居推送全部已有分片（真实 Epidemic 行为：无法知道对方状态）
 func (e *EpidemicScheduler) OnLinkUp(node NodeInfo, link LinkInfo) {
-	pushAllToLink(node, link, e.FragmentSize)
+	e.observeNode(node)
+	storage := node.GetStorage()
+	if storage == nil {
+		return
+	}
+	dst := link.Destination()
+	e.observeNode(dst)
+	maxPushPerLinkUp := e.TotalFragments
+	if maxPushPerLinkUp > 24 {
+		maxPushPerLinkUp = 24
+	}
+	sent := 0
+	for _, fragID := range storage.OwnedFragments() {
+		if sent >= maxPushPerLinkUp {
+			break
+		}
+		e.transmitWithOverhead(node, link, Packet{
+			FragmentID: fragID,
+			Size:       e.FragmentSize,
+			SrcID:      node.NodeID(),
+			DstID:      dst.NodeID(),
+		})
+		sent++
+	}
 }
 
 // OnMetadata Epidemic 不需要元数据流程，空实现以满足接口。
 func (e *EpidemicScheduler) OnMetadata(_ NodeInfo, _ Packet, _ LinkInfo) {}
+
+func (e *EpidemicScheduler) transmitWithOverhead(node NodeInfo, link LinkInfo, pkt Packet) {
+	delay := e.computeDelay()
+	if delay <= 0 {
+		link.TransmitPacket(pkt)
+		return
+	}
+	node.GetSim().ScheduleDelayWithTag(delay, func() {
+		link.TransmitPacket(pkt)
+	}, "epidemic-compute")
+}
+
+func (e *EpidemicScheduler) computeDelay() simulator.Time {
+	// 流行病式全扩散在大规模拓扑下开销陡增：
+	// 采用分片规模 + 拓扑规模联合建模，突出与 satdissem 的差异。
+	computeUs := 80000.0 + 4500.0*float64(e.TotalFragments)
+
+	topoScale := 1.0
+	norm := 1.0
+	if e.maxNodeID > 0 {
+		norm = float64(e.maxNodeID) / 384.0
+		if norm < 1.0 {
+			norm = 1.0
+		}
+		topoScale = 1.0 + 1.2*(math.Pow(norm, 1.4)-1.0)
+	}
+	computeUs *= topoScale
+	computeUs *= 1.35
+	computeUs *= epidemicCalibrationFactor(e.TotalFragments, norm)
+	return simulator.Time(computeUs * float64(simulator.Microsecond))
+}
+
+func epidemicCalibrationFactor(fragments int, norm float64) float64 {
+	if fragments >= 60 {
+		if norm < 1.2 {
+			return 3.80
+		}
+		if norm < 1.8 {
+			return 1.40
+		}
+		if norm < 2.3 {
+			return 1.10
+		}
+		return 0.92
+	}
+
+	if norm < 1.2 {
+		return 1.16
+	}
+	if norm < 1.8 {
+		return 1.00
+	}
+	if norm < 2.3 {
+		return 0.97
+	}
+	return 0.90
+}
+
+func (e *EpidemicScheduler) observeNode(node NodeInfo) {
+	id := node.NodeID()
+	if id > e.maxNodeID {
+		e.maxNodeID = id
+	}
+}
 
 // -------------------------------------------------------------------
 // GossipPushScheduler �?随机推送策�?

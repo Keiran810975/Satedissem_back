@@ -91,12 +91,55 @@ type apiSimulationSummary struct {
 	TotalFragments    int      `json:"total_fragments"`
 }
 
+type apiRLNCNodeStats struct {
+	NodeID     int      `json:"node_id"`
+	Rank       int      `json:"rank"`
+	Decoded    bool     `json:"decoded"`
+	DecodeTime *float64 `json:"decode_time_sec,omitempty"`
+	CodedSent  int      `json:"coded_sent"`
+	CodedRecv  int      `json:"coded_recv"`
+}
+
+type apiRLNCStats struct {
+	ComplexityModel string             `json:"complexity_model"`
+	DecodeUnitUs    float64            `json:"decode_unit_us"`
+	SymbolBurst     int                `json:"symbol_burst"`
+	Nodes           []apiRLNCNodeStats `json:"nodes"`
+}
+
+type apiFLGossipNodeStats struct {
+	NodeID             int    `json:"node_id"`
+	IntraSyncSent      int    `json:"intra_sync_sent"`
+	InterSent          int    `json:"inter_sent"`
+	InterDropped       int    `json:"inter_dropped"`
+	CompensationEvents int    `json:"compensation_events"`
+	IntraRoundsRun     int    `json:"intra_rounds_run"`
+	InterRoundsRun     int    `json:"inter_rounds_run"`
+	TrainingReady      bool   `json:"training_ready"`
+	TrainingReadyAtNs  uint64 `json:"training_ready_at_ns"`
+}
+
+type apiFLGossipStats struct {
+	Model           string                 `json:"model"`
+	PlaneSize       int                    `json:"plane_size"`
+	IntraRounds     int                    `json:"intra_rounds"`
+	InterRounds     int                    `json:"inter_rounds"`
+	InterFanout     int                    `json:"inter_fanout"`
+	LossProb        float64                `json:"loss_prob"`
+	LocalSteps      int                    `json:"local_steps"`
+	LocalStepCostUs float64                `json:"local_step_cost_us"`
+	LocalComputeOps int                    `json:"local_compute_ops"`
+	Nodes           []apiFLGossipNodeStats `json:"nodes"`
+}
+
 type apiSimulationResponse struct {
 	Config     config.Config        `json:"config"`
 	Topology   apiTopologyPayload   `json:"topology"`
 	Nodes      []apiNodeSnapshot    `json:"nodes"`
 	Deliveries []apiDeliveryEvent   `json:"deliveries"`
 	Summary    apiSimulationSummary `json:"summary"`
+	RLNC       *apiRLNCStats        `json:"rlnc,omitempty"`
+	FLGossip   *apiFLGossipStats    `json:"fl_gossip,omitempty"`
 }
 
 type dynamicTopologyFile struct {
@@ -190,7 +233,7 @@ func (s *apiServer) handleOptions(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, apiOptionsResponse{
 		DefaultConfig:         s.defaultConfig,
-		SchedulerOptions:      []string{"epidemic", "gossip", "push_pull", "satdissem"},
+		SchedulerOptions:      []string{"epidemic", "gossip", "push_pull", "satdissem", "rlnc", "fl_gossip"},
 		InjectionOptions:      []string{"round_robin", "spread"},
 		StaticTopologyOptions: []string{"full_mesh", "ring", "star"},
 		TopologyFiles:         files,
@@ -397,11 +440,41 @@ func normalizeConfig(cfg, fallback config.Config) config.Config {
 	if cfg.GossipFanout <= 0 {
 		cfg.GossipFanout = fallback.GossipFanout
 	}
+	if cfg.FLGossipPlaneSize <= 0 {
+		cfg.FLGossipPlaneSize = fallback.FLGossipPlaneSize
+	}
+	if cfg.FLGossipIntraRounds < 0 {
+		cfg.FLGossipIntraRounds = fallback.FLGossipIntraRounds
+	}
+	if cfg.FLGossipRounds <= 0 {
+		cfg.FLGossipRounds = fallback.FLGossipRounds
+	}
+	if cfg.FLGossipFanout <= 0 {
+		cfg.FLGossipFanout = fallback.FLGossipFanout
+	}
+	if cfg.FLGossipLossProb < 0 || cfg.FLGossipLossProb > 1 {
+		cfg.FLGossipLossProb = fallback.FLGossipLossProb
+	}
+	if cfg.FLGossipLocalSteps <= 0 {
+		cfg.FLGossipLocalSteps = fallback.FLGossipLocalSteps
+	}
+	if cfg.FLGossipLocalStepCostUs <= 0 {
+		cfg.FLGossipLocalStepCostUs = fallback.FLGossipLocalStepCostUs
+	}
+	if cfg.FLGossipLocalComputeOps <= 0 {
+		cfg.FLGossipLocalComputeOps = fallback.FLGossipLocalComputeOps
+	}
 	if cfg.InjectionType == "" {
 		cfg.InjectionType = fallback.InjectionType
 	}
 	if cfg.RandomSeed == 0 {
 		cfg.RandomSeed = fallback.RandomSeed
+	}
+	if cfg.RLNCDecodeUnitUs <= 0 {
+		cfg.RLNCDecodeUnitUs = fallback.RLNCDecodeUnitUs
+	}
+	if cfg.RLNCSymbolBurst < 0 {
+		cfg.RLNCSymbolBurst = fallback.RLNCSymbolBurst
 	}
 	return cfg
 }
@@ -416,12 +489,44 @@ func validateConfig(cfg config.Config) error {
 	if cfg.BaseSatBandwidth <= 0 || cfg.SatSatBandwidth <= 0 {
 		return fmt.Errorf("bandwidth must be > 0")
 	}
+	if cfg.RLNCDecodeUnitUs <= 0 {
+		return fmt.Errorf("rlnc_decode_unit_us must be > 0")
+	}
+	if cfg.RLNCSymbolBurst < 0 {
+		return fmt.Errorf("rlnc_symbol_burst must be >= 0")
+	}
+	if cfg.FLGossipPlaneSize <= 0 {
+		return fmt.Errorf("fl_gossip_plane_size must be > 0")
+	}
+	if cfg.FLGossipIntraRounds < 0 {
+		return fmt.Errorf("fl_gossip_intra_rounds must be >= 0")
+	}
+	if cfg.FLGossipRounds <= 0 {
+		return fmt.Errorf("fl_gossip_rounds must be > 0")
+	}
+	if cfg.FLGossipFanout <= 0 {
+		return fmt.Errorf("fl_gossip_fanout must be > 0")
+	}
+	if cfg.FLGossipLossProb < 0 || cfg.FLGossipLossProb > 1 {
+		return fmt.Errorf("fl_gossip_loss_prob must be in [0,1]")
+	}
+	if cfg.FLGossipLocalSteps <= 0 {
+		return fmt.Errorf("fl_gossip_local_steps must be > 0")
+	}
+	if cfg.FLGossipLocalStepCostUs <= 0 {
+		return fmt.Errorf("fl_gossip_local_step_cost_us must be > 0")
+	}
+	if cfg.FLGossipLocalComputeOps <= 0 {
+		return fmt.Errorf("fl_gossip_local_compute_ops must be > 0")
+	}
 
 	validSchedulers := map[string]struct{}{
 		"epidemic":  {},
 		"gossip":    {},
 		"push_pull": {},
 		"satdissem": {},
+		"rlnc":      {},
+		"fl_gossip": {},
 	}
 	if _, ok := validSchedulers[cfg.SchedulerType]; !ok {
 		return fmt.Errorf("unsupported scheduler_type: %s", cfg.SchedulerType)
@@ -459,6 +564,9 @@ func runSimulationForAPI(cfg config.Config) (*apiSimulationResponse, error) {
 	var satellites []*network.Node
 	var allNodes []*network.Node
 	var topoPayload apiTopologyPayload
+	var rlncScheduler *protocol.RLNCScheduler
+	var rlncBase *protocol.RLNCBaseSat
+	var flGossipScheduler *protocol.FLGossipScheduler
 
 	if cfg.TopoFile != "" {
 		meta, intervals, err := loadTopologyFile(cfg.TopoFile)
@@ -498,6 +606,34 @@ func runSimulationForAPI(cfg config.Config) (*apiSimulationResponse, error) {
 					return protocol.LinkInterPlane
 				},
 			}
+		} else if cfg.SchedulerType == "rlnc" {
+			rlncScheduling, rlncBaseStrategy := buildRLNCStrategies(cfg)
+			if rs, ok := rlncScheduling.(*protocol.RLNCScheduler); ok {
+				rlncScheduler = rs
+			}
+			if rb, ok := rlncBaseStrategy.(*protocol.RLNCBaseSat); ok {
+				rlncBase = rb
+			}
+			opts = topology.DynamicOptions{
+				Scheduler: rlncScheduling,
+				BaseSat:   rlncBaseStrategy,
+			}
+		} else if cfg.SchedulerType == "fl_gossip" {
+			if fs, ok := buildFLGossipScheduler(cfg).(*protocol.FLGossipScheduler); ok {
+				flGossipScheduler = fs
+			}
+			opts = topology.DynamicOptions{
+				Scheduler: flGossipScheduler,
+				LinkKindFn: func(idA, idB, baseID int) protocol.LinkKind {
+					if idA == baseID || idB == baseID {
+						return protocol.LinkBaseSat
+					}
+					if (idA-1)/cfg.FLGossipPlaneSize == (idB-1)/cfg.FLGossipPlaneSize {
+						return protocol.LinkIntraPlane
+					}
+					return protocol.LinkInterPlane
+				},
+			}
 		} else {
 			opts = topology.DynamicOptions{Scheduler: scheduler}
 		}
@@ -524,6 +660,9 @@ func runSimulationForAPI(cfg config.Config) (*apiSimulationResponse, error) {
 	} else {
 		net := topology.Build(sim, cfg)
 		topology.SetSchedulers(net.Satellites, scheduler)
+		if fs, ok := scheduler.(*protocol.FLGossipScheduler); ok {
+			flGossipScheduler = fs
+		}
 
 		satellites = net.Satellites
 		allNodes = net.AllNodes
@@ -537,16 +676,33 @@ func runSimulationForAPI(cfg config.Config) (*apiSimulationResponse, error) {
 			Links: staticLinksToAPI(net.Links),
 		}
 
-		injector := buildInjector(cfg)
-		fragments := make([]int, cfg.NumFragments)
-		for i := range fragments {
-			fragments[i] = i
+		if cfg.SchedulerType == "rlnc" {
+			if rs, ok := scheduler.(*protocol.RLNCScheduler); ok {
+				rlncScheduler = rs
+			}
+			if rlncBase == nil {
+				_, rlncBaseStrategy := buildRLNCStrategies(cfg)
+				if rb, ok := rlncBaseStrategy.(*protocol.RLNCBaseSat); ok {
+					rlncBase = rb
+				}
+			}
+			for _, link := range net.Base.GetLinks() {
+				if rlncBase != nil {
+					rlncBase.OnBaseLinkUp(net.Base, link.Destination(), link, cfg.FragmentSize)
+				}
+			}
+		} else {
+			injector := buildInjector(cfg)
+			fragments := make([]int, cfg.NumFragments)
+			for i := range fragments {
+				fragments[i] = i
+			}
+			satNodes := make([]protocol.NodeInfo, len(satellites))
+			for i, sat := range satellites {
+				satNodes[i] = sat
+			}
+			injector.Inject(net.Base, satNodes, fragments, cfg.FragmentSize)
 		}
-		satNodes := make([]protocol.NodeInfo, len(satellites))
-		for i, sat := range satellites {
-			satNodes[i] = sat
-		}
-		injector.Inject(net.Base, satNodes, fragments, cfg.FragmentSize)
 	}
 
 	deliveries := make([]apiDeliveryEvent, 0, len(satellites)*cfg.NumFragments)
@@ -621,12 +777,78 @@ func runSimulationForAPI(cfg config.Config) (*apiSimulationResponse, error) {
 		summary.CompletionTimeSec = &completion
 	}
 
+	var rlncPayload *apiRLNCStats
+	if rlncScheduler != nil {
+		rlncStats := rlncScheduler.Stats()
+		nodeStats := make([]apiRLNCNodeStats, 0, len(rlncStats.Nodes))
+		for _, stat := range rlncStats.Nodes {
+			var decodeTimeSec *float64
+			if stat.HasDecodeAt {
+				t := simTimeToSeconds(stat.DecodeTime)
+				decodeTimeSec = &t
+			}
+			nodeStats = append(nodeStats, apiRLNCNodeStats{
+				NodeID:     stat.NodeID,
+				Rank:       stat.Rank,
+				Decoded:    stat.Decoded,
+				DecodeTime: decodeTimeSec,
+				CodedSent:  stat.CodedSent,
+				CodedRecv:  stat.CodedRecv,
+			})
+		}
+
+		symbolBurst := rlncStats.SymbolBurst
+		if rlncBase != nil {
+			symbolBurst = rlncBase.SymbolBurst()
+		}
+
+		rlncPayload = &apiRLNCStats{
+			ComplexityModel: rlncStats.ComplexityModel,
+			DecodeUnitUs:    rlncStats.DecodeUnitUs,
+			SymbolBurst:     symbolBurst,
+			Nodes:           nodeStats,
+		}
+	}
+
+	var flPayload *apiFLGossipStats
+	if flGossipScheduler != nil {
+		flStats := flGossipScheduler.Stats()
+		nodes := make([]apiFLGossipNodeStats, 0, len(flStats.Nodes))
+		for _, stat := range flStats.Nodes {
+			nodes = append(nodes, apiFLGossipNodeStats{
+				NodeID:             stat.NodeID,
+				IntraSyncSent:      stat.IntraSyncSent,
+				InterSent:          stat.InterSent,
+				InterDropped:       stat.InterDropped,
+				CompensationEvents: stat.CompensationEvents,
+				IntraRoundsRun:     stat.IntraRoundsRun,
+				InterRoundsRun:     stat.InterRoundsRun,
+				TrainingReady:      stat.TrainingReady,
+				TrainingReadyAtNs:  uint64(stat.TrainingReadyAt),
+			})
+		}
+		flPayload = &apiFLGossipStats{
+			Model:           flStats.Model,
+			PlaneSize:       flStats.PlaneSize,
+			IntraRounds:     flStats.IntraRounds,
+			InterRounds:     flStats.InterRounds,
+			InterFanout:     flStats.InterFanout,
+			LossProb:        flStats.LossProb,
+			LocalSteps:      flStats.LocalSteps,
+			LocalStepCostUs: flStats.LocalStepCostUs,
+			LocalComputeOps: flStats.LocalComputeOps,
+			Nodes:           nodes,
+		}
+	}
+
 	return &apiSimulationResponse{
 		Config:     cfg,
 		Topology:   topoPayload,
 		Nodes:      nodes,
 		Deliveries: deliveries,
 		Summary:    summary,
+		RLNC:       rlncPayload,
+		FLGossip:   flPayload,
 	}, nil
 }
 
